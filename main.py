@@ -13,30 +13,65 @@ CLIMATIQ_API_KEY = os.getenv("CLIMATIQ_API_KEY")
 app = FastAPI()
 
 # --------------------- Air Quality ---------------------
-def get_air_quality(city="Mumbai", state="Maharashtra", country="India"):
-    url = f"http://api.airvisual.com/v2/city?city={city}&state={state}&country={country}&key={IQAIR_API_KEY}"
+def get_air_quality(country="India", state=None, city=None):
+    base_url = "http://api.airvisual.com/v2"
+
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        pollution = data["data"]["current"]["pollution"]
-        weather = data["data"]["current"]["weather"]
-        
-        return {
-            "city": city,
-            "aqi_us": pollution["aqius"],
-            "main_pollutant": pollution["mainus"],
-            "temperature": weather["tp"],
-            "humidity": weather["hu"],
-            "wind_speed": weather["ws"]
-        }
+        # If only country given → call "countries" API
+        if state is None and city is None:
+            url = f"{base_url}/countries?key={IQAIR_API_KEY}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            return {"available_countries": [c["country"] for c in data["data"]]}
+
+        # If state missing but city also missing → call "states" API
+        if state is None and city is None and country:
+            url = f"{base_url}/states?country={country}&key={IQAIR_API_KEY}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            return {"available_states": [s["state"] for s in data["data"]]}
+
+        # If state given but city not → fetch cities in that state
+        if state and not city:
+            url = f"{base_url}/cities?state={state}&country={country}&key={IQAIR_API_KEY}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            return {"available_cities": [c["city"] for c in data["data"]]}
+
+        # If city is provided → get actual AQI data
+        if state and city:
+            url = f"{base_url}/city?city={city}&state={state}&country={country}&key={IQAIR_API_KEY}"
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            pollution = data["data"]["current"]["pollution"]
+            weather = data["data"]["current"]["weather"]
+
+            return {
+                "country": country,
+                "state": state,
+                "city": city,
+                "aqi_us": pollution["aqius"],
+                "main_pollutant": pollution["mainus"],
+                "temperature": weather["tp"],
+                "humidity": weather["hu"],
+                "wind_speed": weather["ws"]
+            }
+
+        return {"error": "Invalid query combination"}
+
     except Exception as e:
         return {"error": str(e)}
 
+
 @app.get("/air_quality")
-def air_quality(city: str = "Mumbai", state: str = "Maharashtra", country: str = "India"):
-    return get_air_quality(city, state, country)
+def air_quality(country: str = "India", state: str = None, city: str = None):
+    return get_air_quality(country, state, city)
+
 
 # --------------------- Carbon Emissions ---------------------
 # ✅ Updated valid Climatiq activity IDs
