@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/* Optional: softer default scroll + card shadow */
+html { scroll-behavior: smooth; }
+.drop-shadow { filter: drop-shadow(0 6px 24px rgba(0,0,0,0.35)); }
+
+/* Leaflet tiles */
+@import "leaflet/dist/leaflet.css";
