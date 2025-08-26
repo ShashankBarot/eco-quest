@@ -21,3 +21,11 @@ export async function getCarbon(activity, value) {
   if (!r.ok) throw new Error(`Carbon fetch failed: ${r.status}`);
   return r.json();
 }
+
+// ---- Forecast ----
+export async function getForecast(city, country) {
+  const params = new URLSearchParams({ city, country });
+  const response = await fetch(`${BASE_URL}/forecast?${params}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}

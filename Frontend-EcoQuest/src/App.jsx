@@ -5,7 +5,7 @@ import PollutantChart from "./components/PollutantChart";
 import CarbonCalculator from "./components/CarbonCalculator";
 import Leaderboard from "./components/Leaderboard";
 import MapView from "./components/Mapview";
-import { getAirQuality } from "./lib/api";
+import { getAirQuality, getForecast } from "./lib/api";
 import "./index.css";
 
 function useBadges(points) {
@@ -38,6 +38,7 @@ export default function App() {
   const aqi = aqiData?.aqi_us ?? null;
   const pollutants = aqiData?.pollutants ?? {};
   const coords = aqiData?.coordinates || { lat: 19.076, lon: 72.8777 };
+
   async function fetchAQI() {
     setLoadingAQI(true);
     setError("");
