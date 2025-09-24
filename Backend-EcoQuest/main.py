@@ -6,6 +6,21 @@ import random
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import sqlite3
+from fastapi import Query
+# Initialize SQLite database
+conn = sqlite3.connect("ecoquest.db", check_same_thread=False)
+cursor = conn.cursor()
+
+# Create users table if it doesn't exist
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    points INTEGER DEFAULT 0
+)
+""")
+conn.commit()
+
 
 # Load environment variables
 load_dotenv()
@@ -364,6 +379,39 @@ def get_carbon_estimate(activity="car", value=10, unit="km"):
 @app.get("/carbon")
 def carbon(activity: str = "car", value: float = 10):
     return get_carbon_estimate(activity, value)
+
+# --------------------- Get or create user ---------------------
+@app.get("/user/{username}")
+def get_user(username: str):
+    cursor.execute("SELECT points FROM users WHERE username=?", (username,))
+    row = cursor.fetchone()
+    if row:
+        return {"username": username, "points": row[0]}
+    else:
+        cursor.execute("INSERT INTO users (username, points) VALUES (?, ?)", (username, 0))
+        conn.commit()
+        return {"username": username, "points": 0}
+
+# --------------------- Update user points ---------------------
+@app.post("/update_points")
+def update_points(username: str = Query(...), delta: int = Query(...)):
+    cursor.execute("SELECT points FROM users WHERE username=?", (username,))
+    row = cursor.fetchone()
+    if row:
+        new_points = row[0] + delta
+        cursor.execute("UPDATE users SET points=? WHERE username=?", (new_points, username))
+    else:
+        new_points = delta
+        cursor.execute("INSERT INTO users (username, points) VALUES (?, ?)", (username, new_points))
+    conn.commit()
+    return {"username": username, "points": new_points}
+
+# Leaderboard
+@app.get("/leaderboard")
+def leaderboard():
+    cursor.execute("SELECT username, points FROM users ORDER BY points DESC LIMIT 10")
+    rows = cursor.fetchall()
+    return [{"username": r[0], "points": r[1]} for r in rows]
 
 # --------------------- Root ---------------------
 @app.get("/")
