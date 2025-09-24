@@ -1,11 +1,11 @@
 // src/App.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import AQIGauge from "./components/AQIGauge";
 import PollutantChart from "./components/PollutantChart";
 import CarbonCalculator from "./components/CarbonCalculator";
 import Leaderboard from "./components/Leaderboard";
 import MapView from "./components/Mapview";
-import { getAirQuality, getForecast } from "./lib/api";
+import { getAirQuality, getForecast, getUser, updateUserPoints, getLeaderboard } from "./lib/api";
 import "./index.css";
 
 function useBadges(points) {
@@ -20,60 +20,151 @@ function useBadges(points) {
 }
 
 export default function App() {
-  // search inputs
+  // User state
+  const [username, setUsername] = useState(() => {
+    // Load username from localStorage or default to "Guest"
+    return localStorage.getItem("ecoquest-username") || "Guest";
+  });
+  const [usernameInput, setUsernameInput] = useState(username);
+
+  // Search inputs
   const [city, setCity] = useState("Mumbai");
   const [country, setCountry] = useState("IN");
 
-  // data
+  // Data states
   const [aqiData, setAqiData] = useState(null);
   const [forecast, setForecast] = useState(null);
   const [loadingAQI, setLoadingAQI] = useState(false);
   const [loadingForecast, setLoadingForecast] = useState(false);
   const [error, setError] = useState("");
 
-  // gamification
+  // User & leaderboard states
   const [points, setPoints] = useState(0);
-  const badges = useBadges(points);
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [loadingUser, setLoadingUser] = useState(false);
 
+  const badges = useBadges(points);
   const aqi = aqiData?.aqi_us ?? null;
   const pollutants = aqiData?.pollutants ?? {};
   const coords = aqiData?.coordinates || { lat: 19.076, lon: 72.8777 };
 
-  async function fetchAQI() {
+  // Helper function to reward user and sync with backend
+  const rewardUser = useCallback(async (delta) => {
+    if (!username || username === "Guest") {
+      // For guest users, just update local state
+      setPoints(p => p + delta);
+      return;
+    }
+
+    try {
+      // Update points in backend
+      await updateUserPoints(username, delta);
+      
+      // Fetch updated user data
+      const userData = await getUser(username);
+      setPoints(userData.points);
+    } catch (error) {
+      console.error("Failed to reward user:", error);
+      // Fallback to local state update
+      setPoints(p => p + delta);
+    }
+  }, [username]);
+
+  // Fetch user data from backend
+  const fetchUserData = useCallback(async (currentUsername) => {
+    if (!currentUsername || currentUsername === "Guest") {
+      setPoints(0);
+      return;
+    }
+
+    setLoadingUser(true);
+    try {
+      const userData = await getUser(currentUsername);
+      setPoints(userData.points);
+    } catch (error) {
+      console.error("Failed to fetch user data:", error);
+      // If user doesn't exist, they'll be created on first reward
+      setPoints(0);
+    } finally {
+      setLoadingUser(false);
+    }
+  }, []);
+
+  // Fetch leaderboard data
+  const fetchLeaderboard = useCallback(async () => {
+    try {
+      const leaderboardData = await getLeaderboard();
+      setLeaderboard(leaderboardData);
+    } catch (error) {
+      console.error("Failed to fetch leaderboard:", error);
+      setLeaderboard([]);
+    }
+  }, []);
+
+  // Handle username change
+  const handleUsernameSubmit = useCallback(async (e) => {
+    e.preventDefault();
+    const newUsername = usernameInput.trim();
+    
+    if (newUsername && newUsername !== username) {
+      setUsername(newUsername);
+      localStorage.setItem("ecoquest-username", newUsername);
+      await fetchUserData(newUsername);
+      await fetchLeaderboard();
+    }
+  }, [usernameInput, username, fetchUserData, fetchLeaderboard]);
+
+  // AQI fetch function
+  const fetchAQI = useCallback(async () => {
     setLoadingAQI(true);
     setError("");
     try {
       const data = await getAirQuality(city, country);
       setAqiData(data);
-      setPoints(p => p + 10); // reward: checked AQI
+      await rewardUser(10); // Reward for checking AQI
+      await fetchLeaderboard(); // Update leaderboard after points change
     } catch (e) {
       setError(String(e));
     } finally {
       setLoadingAQI(false);
     }
-  }
+  }, [city, country, rewardUser, fetchLeaderboard]);
 
-  async function fetchForecast() {
+  // Forecast fetch function
+  const fetchForecast = useCallback(async () => {
     setLoadingForecast(true);
     setError("");
     try {
       const f = await getForecast(city, country);
       setForecast(f);
-      setPoints(p => p + 5); // reward: viewed forecast
+      await rewardUser(5); // Reward for viewing forecast
+      await fetchLeaderboard(); // Update leaderboard after points change
     } catch (e) {
       setError(String(e));
     } finally {
       setLoadingForecast(false);
     }
-  }
+  }, [city, country, rewardUser, fetchLeaderboard]);
+
+  // Carbon calculator success handler
+  const handleCarbonSuccess = useCallback(async (data) => {
+    await rewardUser(15); // Reward for calculating carbon
+    await fetchLeaderboard(); // Update leaderboard after points change
+  }, [rewardUser, fetchLeaderboard]);
+
+  // Initial load effects
+  useEffect(() => {
+    fetchUserData(username);
+    fetchLeaderboard();
+  }, [username, fetchUserData, fetchLeaderboard]);
 
   useEffect(() => {
-    // initial load
+    // Initial AQI load
     fetchAQI();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // Only on mount
 
-  // normalize forecast to an array of {date, aqi}
+  // Normalize forecast to an array of {date, aqi}
   const forecastDays = useMemo(() => {
     const raw = forecast?.days || forecast?.forecast || [];
     return raw.slice(0, 3).map(d => ({
@@ -82,12 +173,25 @@ export default function App() {
     }));
   }, [forecast]);
 
-  const otherPlayers = [
-    { name: "Aarav", points: 120 },
-    { name: "Mia", points: 85 },
-    { name: "Zara", points: 60 },
-    { name: "Leo", points: 40 },
-  ];
+  // Prepare leaderboard data with field normalization
+  const currentUser = { name: username, points, badges };
+  
+  // Normalize leaderboard data - handle both 'username' and 'name' fields
+  const normalizedLeaderboard = leaderboard.map(user => ({
+    name: user.username || user.name || 'Unknown',
+    username: user.username || user.name || 'Unknown',
+    points: user.points || 0
+  }));
+  
+  const otherUsers = normalizedLeaderboard.filter(user => 
+    user.username !== username && user.name !== username
+  );
+
+  // Debug logging
+  console.log('Raw leaderboard data:', leaderboard);
+  console.log('Normalized leaderboard:', normalizedLeaderboard);
+  console.log('Current username:', username);
+  console.log('Other users:', otherUsers);
 
   return (
     <div className="min-h-screen bg-[#0a0f1a] text-white">
@@ -101,10 +205,39 @@ export default function App() {
               Hackathon Demo
             </span>
           </div>
+          
+          {/* Username and Points Section */}
           <div className="flex items-center gap-4">
+            {/* Username Input */}
+            <form onSubmit={handleUsernameSubmit} className="flex items-center gap-2">
+              <input
+                value={usernameInput}
+                onChange={(e) => setUsernameInput(e.target.value)}
+                placeholder="Enter username"
+                className="w-24 sm:w-32 rounded-lg bg-white/5 border border-white/10 px-2 py-1 text-sm outline-none focus:border-emerald-400/50"
+                maxLength={20}
+              />
+              {usernameInput !== username && (
+                <button
+                  type="submit"
+                  className="rounded-lg bg-emerald-500 hover:bg-emerald-400 px-2 py-1 text-xs font-semibold text-slate-900 transition"
+                >
+                  Set
+                </button>
+              )}
+            </form>
+            
+            {/* Points Display */}
             <div className="rounded-xl bg-white/5 px-3 py-1.5 text-sm">
-              Points: <b className="text-emerald-400">{points}</b>
+              <span className="text-gray-300">
+                {username}: 
+              </span>
+              <b className="text-emerald-400 ml-1">
+                {loadingUser ? "..." : points} pts
+              </b>
             </div>
+            
+            {/* Badges */}
             <div className="hidden sm:flex gap-1">
               {badges.map((b, i) => (
                 <span key={i} className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-emerald-500 to-cyan-400 px-2 py-1 text-xs font-semibold text-slate-900">
@@ -131,12 +264,14 @@ export default function App() {
           </div>
           <div className="sm:col-span-1 flex items-end gap-2">
             <button onClick={fetchAQI}
-              className="w-full rounded-xl bg-indigo-500 hover:bg-indigo-400 px-4 py-2 font-semibold text-slate-900 transition">
-              {loadingAQI ? "Fetching AQI…" : "Fetch AQI"}
+              disabled={loadingAQI}
+              className="w-full rounded-xl bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 font-semibold text-slate-900 transition">
+              {loadingAQI ? "Fetching AQI…" : "Fetch AQI (+10 pts)"}
             </button>
             <button onClick={fetchForecast}
-              className="whitespace-nowrap rounded-xl border border-white/15 px-4 py-2 font-semibold hover:bg-white/5">
-              {loadingForecast ? "Loading…" : "3-Day Forecast"}
+              disabled={loadingForecast}
+              className="whitespace-nowrap rounded-xl border border-white/15 hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 font-semibold transition">
+              {loadingForecast ? "Loading…" : "3-Day Forecast (+5 pts)"}
             </button>
           </div>
         </div>
@@ -180,13 +315,13 @@ export default function App() {
           {/* Right column: carbon + leaderboard + forecast */}
           <div className="space-y-6">
             <CarbonCalculator
-              onSuccess={() => setPoints(p => p + 15)} // reward: calculated carbon
+              onSuccess={handleCarbonSuccess}
               onError={(e) => setError(e)}
             />
 
             <Leaderboard
-              me={{ name: "You", points, badges }}
-              others={otherPlayers}
+              me={currentUser}
+              others={otherUsers}
             />
 
             {forecastDays?.length > 0 && (
@@ -228,7 +363,7 @@ export default function App() {
       </main>
 
       <footer className="mx-auto max-w-7xl px-4 py-6 text-xs text-gray-400">
-        Built with React, Tailwind, Recharts & Leaflet. Backend: FastAPI.
+        Built with React, Tailwind, Recharts & Leaflet. Backend: FastAPI + SQLite.
       </footer>
     </div>
   );

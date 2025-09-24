@@ -1,31 +1,55 @@
 // src/lib/api.js
-const BASE_URL = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const API_BASE = "http://localhost:8000"; // Adjust if your backend runs on different port
 
-// ---- Air Quality ----
-export async function getAirQuality(city, country, state) {
-  const url = new URL(`${BASE_URL}/air_quality`);
-  if (city) url.searchParams.set("city", city);
-  if (country) url.searchParams.set("country", country);
-  if (state) url.searchParams.set("state", state);
-  const r = await fetch(url.toString());
-  if (!r.ok) throw new Error(`AQI fetch failed: ${r.status}`);
-  return r.json();
+// Existing API functions
+export async function getAirQuality(city, country) {
+  const params = new URLSearchParams({ city, country });
+  const response = await fetch(`${API_BASE}/air_quality?${params}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
 }
 
-// ---- Carbon Emissions ----
 export async function getCarbon(activity, value) {
-  const url = new URL(`${BASE_URL}/carbon`);
-  url.searchParams.set("activity", activity);
-  url.searchParams.set("value", value);
-  const r = await fetch(url.toString());
-  if (!r.ok) throw new Error(`Carbon fetch failed: ${r.status}`);
-  return r.json();
+  const params = new URLSearchParams({ activity, value });
+  const response = await fetch(`${API_BASE}/carbon?${params}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
 }
 
-// ---- Forecast ----
 export async function getForecast(city, country) {
   const params = new URLSearchParams({ city, country });
-  const response = await fetch(`${BASE_URL}/forecast?${params}`);
+  const response = await fetch(`${API_BASE}/forecast?${params}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+// New user management API functions
+export async function getUser(username) {
+  const response = await fetch(`${API_BASE}/user/${encodeURIComponent(username)}`);
+  if (!response.ok) {
+    if (response.status === 404) {
+      // User doesn't exist yet, return default data
+      return { username, points: 0 };
+    }
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function updateUserPoints(username, delta) {
+  const params = new URLSearchParams({ 
+    username: encodeURIComponent(username), 
+    delta: delta.toString() 
+  });
+  const response = await fetch(`${API_BASE}/update_points?${params}`, {
+    method: 'POST'
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function getLeaderboard() {
+  const response = await fetch(`${API_BASE}/leaderboard`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return response.json();
 }
