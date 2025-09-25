@@ -5,7 +5,7 @@ import PollutantChart from "./components/PollutantChart";
 import CarbonCalculator from "./components/CarbonCalculator";
 import Leaderboard from "./components/Leaderboard";
 import MapView from "./components/Mapview";
-import { getAirQuality, getForecast, getUser, updateUserPoints, getLeaderboard } from "./lib/api";
+import { getAirQuality, getForecast, getUser, getLeaderboard } from "./lib/api";
 import "./index.css";
 
 function useBadges(points) {
@@ -43,105 +43,33 @@ export default function App() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [loadingUser, setLoadingUser] = useState(false);
   
-  // Rate limiting states
-  const [dailyActions, setDailyActions] = useState(() => {
-    const today = new Date().toDateString();
-    const stored = localStorage.getItem(`ecoquest-actions-${today}`);
-    return stored ? JSON.parse(stored) : {
-      aqiChecks: 0,
-      forecastChecks: 0,
-      carbonCalculations: 0,
-      lastReset: today
-    };
+  // Daily actions state (now managed by backend)
+  const [dailyActions, setDailyActions] = useState({
+    aqi_checks: 0,
+    forecast_checks: 0,
+    carbon_calculations: 0
   });
-
-  // Daily limits
-  const DAILY_LIMITS = {
-    aqiChecks: 5,      // Max 5 AQI checks per day
-    forecastChecks: 3, // Max 3 forecast checks per day  
-    carbonCalculations: 10 // Max 10 carbon calculations per day
-  };
+  
+  const [dailyLimits, setDailyLimits] = useState({
+    aqi_checks: 5,
+    forecast_checks: 3,
+    carbon_calculations: 10
+  });
 
   const badges = useBadges(points);
   const aqi = aqiData?.aqi_us ?? null;
   const pollutants = aqiData?.pollutants ?? {};
   const coords = aqiData?.coordinates || { lat: 19.076, lon: 72.8777 };
 
-  // Helper function to check and update daily actions
-  const updateDailyActions = useCallback((actionType) => {
-    const today = new Date().toDateString();
-    
-    setDailyActions(prev => {
-      // Reset if it's a new day
-      if (prev.lastReset !== today) {
-        const newActions = {
-          aqiChecks: 0,
-          forecastChecks: 0, 
-          carbonCalculations: 0,
-          lastReset: today
-        };
-        localStorage.setItem(`ecoquest-actions-${today}`, JSON.stringify(newActions));
-        return newActions;
-      }
-      
-      // Update the specific action count
-      const updated = {
-        ...prev,
-        [actionType]: prev[actionType] + 1
-      };
-      
-      localStorage.setItem(`ecoquest-actions-${today}`, JSON.stringify(updated));
-      return updated;
-    });
-  }, []);
-
-  // Helper function to reward user with rate limiting
-  const rewardUser = useCallback(async (delta, actionType) => {
-    // Check if user has exceeded daily limit
-    const today = new Date().toDateString();
-    if (dailyActions.lastReset === today && dailyActions[actionType] >= DAILY_LIMITS[actionType]) {
-      setError(`Daily limit reached! You can only perform this action ${DAILY_LIMITS[actionType]} times per day.`);
-      return false;
-    }
-
-    if (!username || username === "Guest") {
-      // For guest users, still apply rate limiting but update local state
-      if (dailyActions.lastReset === new Date().toDateString() && dailyActions[actionType] >= DAILY_LIMITS[actionType]) {
-        setError(`Daily limit reached! You can only perform this action ${DAILY_LIMITS[actionType]} times per day.`);
-        return false;
-      }
-      updateDailyActions(actionType);
-      setPoints(p => p + delta);
-      return true;
-    }
-
-    try {
-      // Update actions count first
-      updateDailyActions(actionType);
-      
-      // Update points in backend
-      await updateUserPoints(username, delta);
-      
-      // Fetch updated user data
-      const userData = await getUser(username);
-      setPoints(userData.points);
-      return true;
-    } catch (error) {
-      console.error("Failed to reward user:", error);
-      // Rollback the action count on error
-      setDailyActions(prev => ({
-        ...prev,
-        [actionType]: Math.max(0, prev[actionType] - 1)
-      }));
-      setError("Failed to update points. Please try again.");
-      return false;
-    }
-  }, [username, dailyActions, updateDailyActions]);
-
   // Fetch user data from backend
   const fetchUserData = useCallback(async (currentUsername) => {
     if (!currentUsername || currentUsername === "Guest") {
       setPoints(0);
+      setDailyActions({
+        aqi_checks: 0,
+        forecast_checks: 0,
+        carbon_calculations: 0
+      });
       return;
     }
 
@@ -149,10 +77,16 @@ export default function App() {
     try {
       const userData = await getUser(currentUsername);
       setPoints(userData.points);
+      setDailyActions(userData.daily_actions);
+      setDailyLimits(userData.daily_limits);
     } catch (error) {
       console.error("Failed to fetch user data:", error);
-      // If user doesn't exist, they'll be created on first reward
       setPoints(0);
+      setDailyActions({
+        aqi_checks: 0,
+        forecast_checks: 0,
+        carbon_calculations: 0
+      });
     } finally {
       setLoadingUser(false);
     }
@@ -182,66 +116,86 @@ export default function App() {
     }
   }, [usernameInput, username, fetchUserData, fetchLeaderboard]);
 
-  // AQI fetch function with rate limiting
+  // AQI fetch function with backend rate limiting
   const fetchAQI = useCallback(async () => {
-    if (dailyActions.aqiChecks >= DAILY_LIMITS.aqiChecks && dailyActions.lastReset === new Date().toDateString()) {
-      setError(`Daily limit reached! You can only check AQI ${DAILY_LIMITS.aqiChecks} times per day. Come back tomorrow!`);
+    if (!username || username === "Guest") {
+      setError("Please set a username to check AQI and earn points!");
       return;
     }
 
     setLoadingAQI(true);
     setError("");
     try {
-      const data = await getAirQuality(city, country);
+      const data = await getAirQuality(city, country, username);
       setAqiData(data);
       
-      const success = await rewardUser(10, 'aqiChecks'); // Reward for checking AQI
-      if (success) {
-        await fetchLeaderboard(); // Update leaderboard after points change
+      // Update user data from response
+      if (data.total_points !== undefined) {
+        setPoints(data.total_points);
+        setDailyActions(prev => ({
+          ...prev,
+          aqi_checks: dailyLimits.aqi_checks - (data.remaining_checks || 0)
+        }));
       }
+      
+      await fetchLeaderboard(); // Update leaderboard after points change
     } catch (e) {
-      setError(String(e));
+      if (e.message.includes('429')) {
+        setError("Daily limit reached! You can only check AQI 5 times per day. Come back tomorrow!");
+      } else {
+        setError(String(e));
+      }
     } finally {
       setLoadingAQI(false);
     }
-  }, [city, country, rewardUser, fetchLeaderboard, dailyActions]);
+  }, [city, country, username, fetchLeaderboard, dailyLimits]);
 
-  // Forecast fetch function with rate limiting
+  // Forecast fetch function with backend rate limiting
   const fetchForecast = useCallback(async () => {
-    if (dailyActions.forecastChecks >= DAILY_LIMITS.forecastChecks && dailyActions.lastReset === new Date().toDateString()) {
-      setError(`Daily limit reached! You can only check forecasts ${DAILY_LIMITS.forecastChecks} times per day. Come back tomorrow!`);
+    if (!username || username === "Guest") {
+      setError("Please set a username to check forecasts and earn points!");
       return;
     }
 
     setLoadingForecast(true);
     setError("");
     try {
-      const f = await getForecast(city, country);
+      const f = await getForecast(city, country, username);
       setForecast(f);
       
-      const success = await rewardUser(5, 'forecastChecks'); // Reward for viewing forecast
-      if (success) {
-        await fetchLeaderboard(); // Update leaderboard after points change
+      // Update user data from response
+      if (f.total_points !== undefined) {
+        setPoints(f.total_points);
+        setDailyActions(prev => ({
+          ...prev,
+          forecast_checks: dailyLimits.forecast_checks - (f.remaining_checks || 0)
+        }));
       }
+      
+      await fetchLeaderboard(); // Update leaderboard after points change
     } catch (e) {
-      setError(String(e));
+      if (e.message.includes('429')) {
+        setError("Daily limit reached! You can only check forecasts 3 times per day. Come back tomorrow!");
+      } else {
+        setError(String(e));
+      }
     } finally {
       setLoadingForecast(false);
     }
-  }, [city, country, rewardUser, fetchLeaderboard, dailyActions]);
+  }, [city, country, username, fetchLeaderboard, dailyLimits]);
 
-  // Carbon calculator success handler with rate limiting
+  // Carbon calculator success handler with backend rate limiting
   const handleCarbonSuccess = useCallback(async (data) => {
-    if (dailyActions.carbonCalculations >= DAILY_LIMITS.carbonCalculations && dailyActions.lastReset === new Date().toDateString()) {
-      setError(`Daily limit reached! You can only calculate carbon ${DAILY_LIMITS.carbonCalculations} times per day. Come back tomorrow!`);
-      return;
-    }
-
-    const success = await rewardUser(15, 'carbonCalculations'); // Reward for calculating carbon
-    if (success) {
+    // Update user data from response
+    if (data.total_points !== undefined) {
+      setPoints(data.total_points);
+      setDailyActions(prev => ({
+        ...prev,
+        carbon_calculations: dailyLimits.carbon_calculations - (data.remaining_checks || 0)
+      }));
       await fetchLeaderboard(); // Update leaderboard after points change
     }
-  }, [rewardUser, fetchLeaderboard, dailyActions]);
+  }, [fetchLeaderboard, dailyLimits]);
 
   // Initial load effects
   useEffect(() => {
@@ -250,8 +204,10 @@ export default function App() {
   }, [username, fetchUserData, fetchLeaderboard]);
 
   useEffect(() => {
-    // Initial AQI load
-    fetchAQI();
+    // Initial AQI load only if user is set
+    if (username && username !== "Guest") {
+      fetchAQI();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only on mount
 
@@ -278,11 +234,10 @@ export default function App() {
     user.username !== username && user.name !== username
   );
 
-  // Debug logging
-  console.log('Raw leaderboard data:', leaderboard);
-  console.log('Normalized leaderboard:', normalizedLeaderboard);
-  console.log('Current username:', username);
-  console.log('Other users:', otherUsers);
+  // Check if user can perform actions
+  const canCheckAQI = username && username !== "Guest" && dailyActions.aqi_checks < dailyLimits.aqi_checks;
+  const canCheckForecast = username && username !== "Guest" && dailyActions.forecast_checks < dailyLimits.forecast_checks;
+  const canCalculateCarbon = username && username !== "Guest" && dailyActions.carbon_calculations < dailyLimits.carbon_calculations;
 
   return (
     <div className="min-h-screen bg-[#0a0f1a] text-white">
@@ -355,25 +310,31 @@ export default function App() {
           </div>
           <div className="sm:col-span-1 flex items-end gap-2">
             <button onClick={fetchAQI}
-              disabled={loadingAQI || (dailyActions.aqiChecks >= DAILY_LIMITS.aqiChecks && dailyActions.lastReset === new Date().toDateString())}
+              disabled={loadingAQI || !canCheckAQI}
               className="w-full rounded-xl bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 font-semibold text-slate-900 transition">
               {loadingAQI ? "Fetching AQI…" : 
-               (dailyActions.aqiChecks >= DAILY_LIMITS.aqiChecks && dailyActions.lastReset === new Date().toDateString()) 
-                ? `Daily Limit (${dailyActions.aqiChecks}/${DAILY_LIMITS.aqiChecks})`
-                : `Fetch AQI (+10 pts) [${dailyActions.aqiChecks}/${DAILY_LIMITS.aqiChecks}]`}
+               !canCheckAQI && username !== "Guest" ? `Daily Limit (${dailyActions.aqi_checks}/${dailyLimits.aqi_checks})` :
+               username === "Guest" ? "Set Username First" :
+               `Fetch AQI (+10 pts) [${dailyActions.aqi_checks}/${dailyLimits.aqi_checks}]`}
             </button>
             <button onClick={fetchForecast}
-              disabled={loadingForecast || (dailyActions.forecastChecks >= DAILY_LIMITS.forecastChecks && dailyActions.lastReset === new Date().toDateString())}
+              disabled={loadingForecast || !canCheckForecast}
               className="whitespace-nowrap rounded-xl border border-white/15 hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 font-semibold transition">
               {loadingForecast ? "Loading…" : 
-               (dailyActions.forecastChecks >= DAILY_LIMITS.forecastChecks && dailyActions.lastReset === new Date().toDateString())
-                ? "Daily Limit"
-                : `Forecast (+5 pts) [${dailyActions.forecastChecks}/${DAILY_LIMITS.forecastChecks}]`}
+               !canCheckForecast && username !== "Guest" ? "Daily Limit" :
+               username === "Guest" ? "Set Username" :
+               `Forecast (+5 pts) [${dailyActions.forecast_checks}/${dailyLimits.forecast_checks}]`}
             </button>
           </div>
         </div>
 
         {error && <div className="mt-3 rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-sm text-red-300">{error}</div>}
+
+        {username === "Guest" && (
+          <div className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-sm text-amber-300">
+            ⚠️ Set a username to earn points and track your daily progress!
+          </div>
+        )}
 
         {/* Main grid */}
         <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -414,8 +375,10 @@ export default function App() {
             <CarbonCalculator
               onSuccess={handleCarbonSuccess}
               onError={(e) => setError(e)}
-              dailyUsage={dailyActions.carbonCalculations}
-              dailyLimit={DAILY_LIMITS.carbonCalculations}
+              dailyUsage={dailyActions.carbon_calculations}
+              dailyLimit={dailyLimits.carbon_calculations}
+              canCalculate={canCalculateCarbon}
+              username={username}
             />
 
             <Leaderboard
@@ -444,26 +407,26 @@ export default function App() {
               <div className="mt-2 space-y-2 text-sm">
                 <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
                   <span>AQI Checks</span>
-                  <span className={`font-semibold ${dailyActions.aqiChecks >= DAILY_LIMITS.aqiChecks ? 'text-red-400' : 'text-emerald-400'}`}>
-                    {dailyActions.aqiChecks}/{DAILY_LIMITS.aqiChecks}
+                  <span className={`font-semibold ${dailyActions.aqi_checks >= dailyLimits.aqi_checks ? 'text-red-400' : 'text-emerald-400'}`}>
+                    {dailyActions.aqi_checks}/{dailyLimits.aqi_checks}
                   </span>
                 </div>
                 <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
                   <span>Forecast Checks</span>
-                  <span className={`font-semibold ${dailyActions.forecastChecks >= DAILY_LIMITS.forecastChecks ? 'text-red-400' : 'text-emerald-400'}`}>
-                    {dailyActions.forecastChecks}/{DAILY_LIMITS.forecastChecks}
+                  <span className={`font-semibold ${dailyActions.forecast_checks >= dailyLimits.forecast_checks ? 'text-red-400' : 'text-emerald-400'}`}>
+                    {dailyActions.forecast_checks}/{dailyLimits.forecast_checks}
                   </span>
                 </div>
                 <div className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2">
                   <span>Carbon Calculations</span>
-                  <span className={`font-semibold ${dailyActions.carbonCalculations >= DAILY_LIMITS.carbonCalculations ? 'text-red-400' : 'text-emerald-400'}`}>
-                    {dailyActions.carbonCalculations}/{DAILY_LIMITS.carbonCalculations}
+                  <span className={`font-semibold ${dailyActions.carbon_calculations >= dailyLimits.carbon_calculations ? 'text-red-400' : 'text-emerald-400'}`}>
+                    {dailyActions.carbon_calculations}/{dailyLimits.carbon_calculations}
                   </span>
                 </div>
               </div>
               
               <div className="mt-3 text-xs text-gray-400">
-                Limits reset daily at midnight
+                Limits reset daily at midnight. Each user has their own limits.
               </div>
             </div>
 
