@@ -192,9 +192,12 @@ def generate_mock_pollutants():
     }
 
 # --------------------- Air Quality ---------------------
-def get_air_quality(city="Mumbai", state=None, country="India"):
+def get_air_quality_internal(city="Mumbai", state=None, country="India"):
+    """
+    Internal function to get air quality without rate limiting - used for forecast generation
+    """
     try:
-        # ✅ Get AQI from IQAir
+        # Same logic as get_air_quality but without rate limiting or username requirement
         if state:
             url = f"http://api.airvisual.com/v2/city?city={city}&state={state}&country={country}&key={IQAIR_API_KEY}"
         else:
@@ -213,12 +216,11 @@ def get_air_quality(city="Mumbai", state=None, country="India"):
 
         lat, lon = coords[1], coords[0]
 
-        # ✅ Get pollutants from OpenAQ
+        # ✅ Get pollutants from OpenAQ (will likely fail, but that's ok)
         pollutants = get_pollutants_from_openaq(city, country)
 
         # ✅ Fallback to mock if no OpenAQ data
         if not pollutants:
-            print(f"No OpenAQ data for {city}, {country} → using mock values")
             pollutants = generate_mock_pollutants()
 
         return {
@@ -238,7 +240,61 @@ def get_air_quality(city="Mumbai", state=None, country="India"):
             "wind_speed": weather["ws"]
         }
     except Exception as e:
+        print(f"Internal AQI fetch error: {e}")
         return {"error": str(e)}
+
+# Also add this function to reduce debug noise:
+def clean_debug_logging():
+    """Reduce excessive debug logging"""
+    import logging
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+# Call this at the start of your app
+clean_debug_logging()
+def get_air_quality(city="Mumbai", state=None, country="India"):
+    """
+    Public function to fetch current air quality (with pollutants & weather).
+    """
+    try:
+        if state:
+            url = f"http://api.airvisual.com/v2/city?city={city}&state={state}&country={country}&key={IQAIR_API_KEY}"
+        else:
+            lat, lon = geocode_city(city, country)
+            if not lat or not lon:
+                return {"error": f"Could not geocode {city}, {country}"}
+            url = f"http://api.airvisual.com/v2/nearest_city?lat={lat}&lon={lon}&key={IQAIR_API_KEY}"
+
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        pollution = data["data"]["current"]["pollution"]
+        weather = data["data"]["current"]["weather"]
+        coords = data["data"]["location"]["coordinates"]  # [lon, lat]
+        lat, lon = coords[1], coords[0]
+
+        # Pollutants from OpenAQ (fallback to mock if fails)
+        pollutants = get_pollutants_from_openaq(city, country)
+        if not pollutants:
+            pollutants = generate_mock_pollutants()
+
+        return {
+            "requested_city": city,
+            "nearest_station_city": data["data"]["city"],
+            "state": data["data"]["state"],
+            "country": data["data"]["country"],
+            "aqi_us": pollution["aqius"],
+            "main_pollutant": pollution["mainus"],
+            "pollutants": pollutants,
+            "coordinates": {"lat": lat, "lon": lon},
+            "temperature": weather["tp"],
+            "humidity": weather["hu"],
+            "wind_speed": weather["ws"]
+        }
+    except Exception as e:
+        return {"error": f"Failed to fetch air quality: {str(e)}"}
+# --------------------- API Endpoint ---------------------
 
 @app.get("/air_quality")
 def air_quality(city: str = "Mumbai", state: str | None = None, country: str = "India", username: str = Query(...)):
@@ -270,77 +326,74 @@ def air_quality(city: str = "Mumbai", state: str | None = None, country: str = "
 
 # --------------------- AQI Forecast (keeping existing code but adding rate limiting) ---------------------
 
+# Replace the verbose logging in your forecast functions with cleaner versions:
+
 def get_aqi_forecast(city="Mumbai", state=None, country="India", days=3):
     """
     Get AQI forecast - tries IQAir API first, falls back to intelligent estimation
     """
     try:
-        print(f"Getting forecast for {city}, {country}")
-        
         # Get coordinates for the city
         lat, lon = geocode_city(city, country)
         if not lat or not lon:
-            print(f"Could not geocode {city}, {country}")
             return {"error": f"Could not geocode {city}, {country}"}
         
-        print(f"Coordinates found: {lat}, {lon}")
-        
-        # Try IQAir forecast endpoint (this will likely fail as most APIs don't have forecast)
+        # Try IQAir forecast endpoint (expected to fail)
         try:
             forecast_data = get_iqair_forecast(city, state, country, days)
             if forecast_data and "error" not in forecast_data:
-                print("IQAir forecast successful")
                 return forecast_data
-        except Exception as e:
-            print(f"IQAir forecast failed: {e}")
+        except Exception:
+            pass  # Expected failure, continue to fallback
             
         # Fallback: Generate realistic forecast based on current AQI
-        print("Falling back to estimated forecast")
         try:
-            # Get current data WITHOUT username to avoid rate limiting during forecast generation
             current_data = get_air_quality_internal(city, state, country)
-            print(f"Current AQI data: {current_data}")
             
             if current_data and "error" not in current_data:
-                forecast_result = generate_aqi_forecast(current_data, days)
-                print(f"Generated forecast: {forecast_result}")
-                return forecast_result
-            else:
-                print(f"Current data error: {current_data}")
-        except Exception as e:
-            print(f"Forecast generation failed: {e}")
+                return generate_aqi_forecast(current_data, days)
+        except Exception:
+            pass  # Continue to basic forecast
             
-        # If everything fails, generate a basic forecast with mock current AQI
-        print("Generating basic mock forecast")
-        mock_current_data = {
-            "aqi_us": 75,  # Default moderate AQI
-            "requested_city": city,
-            "country": country
-        }
-        return generate_aqi_forecast(mock_current_data, days)
+        # If everything fails, generate a basic forecast
+        return generate_basic_forecast(city, country, days)
             
     except Exception as e:
-        print(f"Forecast error: {e}")
         return {"error": f"Forecast error: {str(e)}"}
 
-def get_air_quality_internal(city="Mumbai", state=None, country="India"):
-    """
-    Internal function to get air quality without rate limiting - used for forecast generation
-    """
-    return get_air_quality(city, state, country)
+def generate_basic_forecast(city, country, days):
+    """Generate a basic forecast when all else fails"""
+    base_date = datetime.datetime.now()
+    basic_forecast = []
+    
+    # Use moderate AQI with some variation
+    base_aqi = 50  # Moderate baseline
+    
+    for i in range(days):
+        forecast_date = base_date + datetime.timedelta(days=i+1)
+        # Add realistic daily variation
+        daily_aqi = max(20, min(150, base_aqi + random.randint(-20, 20)))
+        
+        basic_forecast.append({
+            "date": forecast_date.strftime("%Y-%m-%d"),
+            "aqi": daily_aqi
+        })
+        
+        # Slight trend for next day
+        base_aqi = daily_aqi * random.uniform(0.9, 1.1)
+        
+    return {
+        "city": city,
+        "country": country, 
+        "forecast_type": "basic_estimated",
+        "days": basic_forecast
+    }
 
 def get_iqair_forecast(city, state, country, days):
     """
-    Try to get forecast from IQAir API (likely to fail as most APIs don't have forecast endpoints)
+    Try to get forecast from IQAir API (expected to fail gracefully)
     """
     try:
-        print("Attempting IQAir forecast...")
-        
-        # Most air quality APIs don't actually have forecast endpoints
-        # IQAir API documentation doesn't mention forecast endpoints either
-        # So this will likely always return None, which is expected
-        
-        # Try a hypothetical forecast endpoint (this will probably 404)
         if state:
             url = f"http://api.airvisual.com/v2/forecast/city?city={city}&state={state}&country={country}&key={IQAIR_API_KEY}"
         else:
@@ -349,23 +402,19 @@ def get_iqair_forecast(city, state, country, days):
                 return None
             url = f"http://api.airvisual.com/v2/forecast/nearest?lat={lat}&lon={lon}&key={IQAIR_API_KEY}"
         
-        print(f"Trying IQAir URL: {url}")
         response = requests.get(url, timeout=10)
         
-        if response.status_code == 404:
-            print("IQAir forecast endpoint not available (expected)")
+        # Most air quality APIs don't have forecast endpoints
+        if response.status_code in [404, 400, 501]:
             return None
             
         if response.status_code != 200:
-            print(f"IQAir forecast returned status: {response.status_code}")
             return None
             
         response.raise_for_status()
         data = response.json()
         
-        print(f"IQAir response: {data}")
-        
-        # Process IQAir forecast data if it exists
+        # Process IQAir forecast data if it exists (unlikely)
         if "data" in data and "forecasts_daily" in data["data"]:
             return process_iqair_daily_forecast(data["data"], days)
         elif "data" in data and "forecasts" in data["data"]:
@@ -373,13 +422,8 @@ def get_iqair_forecast(city, state, country, days):
         
         return None
         
-    except requests.exceptions.RequestException as e:
-        print(f"IQAir forecast request failed (expected): {e}")
-        return None
-    except Exception as e:
-        print(f"IQAir forecast failed: {e}")
-        return None
-
+    except Exception:
+        return None  # Expected failure, no logging needed
 def process_iqair_daily_forecast(data, days):
     """
     Process IQAir daily forecast data
@@ -441,7 +485,6 @@ def generate_aqi_forecast(current_data, days):
         city = current_data.get("requested_city", "Unknown")
         country = current_data.get("country", "Unknown")
         
-        print(f"Generating forecast for {city}, {country} with current AQI: {current_aqi}")
         
         forecast_days = []
         base_date = datetime.datetime.now()
@@ -469,7 +512,6 @@ def generate_aqi_forecast(current_data, days):
             "days": forecast_days
         }
         
-        print(f"Generated forecast result: {result}")
         return result
         
     except Exception as e:
@@ -542,10 +584,9 @@ def forecast(city: str = "Mumbai", state: str | None = None, country: str = "Ind
         raise e
     
     # Get forecast data
-    print(f"Getting forecast for {city}, {country}, {days} days")
-    data = get_aqi_forecast(city, state, country, days)
-    print(f"Forecast result: {data}")
     
+    data = get_aqi_forecast(city, state, country, days)
+
     # Add points if successful
     if "error" not in data:
         cursor.execute("SELECT points FROM users WHERE username=?", (username,))
