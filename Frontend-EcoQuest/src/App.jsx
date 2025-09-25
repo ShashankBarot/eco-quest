@@ -42,14 +42,14 @@ export default function App() {
   const [points, setPoints] = useState(0);
   const [leaderboard, setLeaderboard] = useState([]);
   const [loadingUser, setLoadingUser] = useState(false);
-  
+
   // Daily actions state (now managed by backend)
   const [dailyActions, setDailyActions] = useState({
     aqi_checks: 0,
     forecast_checks: 0,
     carbon_calculations: 0
   });
-  
+
   const [dailyLimits, setDailyLimits] = useState({
     aqi_checks: 5,
     forecast_checks: 3,
@@ -107,7 +107,7 @@ export default function App() {
   const handleUsernameSubmit = useCallback(async (e) => {
     e.preventDefault();
     const newUsername = usernameInput.trim();
-    
+
     if (newUsername && newUsername !== username) {
       setUsername(newUsername);
       localStorage.setItem("ecoquest-username", newUsername);
@@ -128,7 +128,7 @@ export default function App() {
     try {
       const data = await getAirQuality(city, country, username);
       setAqiData(data);
-      
+
       // Update user data from response
       if (data.total_points !== undefined) {
         setPoints(data.total_points);
@@ -137,7 +137,7 @@ export default function App() {
           aqi_checks: dailyLimits.aqi_checks - (data.remaining_checks || 0)
         }));
       }
-      
+
       await fetchLeaderboard(); // Update leaderboard after points change
     } catch (e) {
       if (e.message.includes('429')) {
@@ -162,7 +162,7 @@ export default function App() {
     try {
       const f = await getForecast(city, country, username);
       setForecast(f);
-      
+
       // Update user data from response
       if (f.total_points !== undefined) {
         setPoints(f.total_points);
@@ -171,7 +171,7 @@ export default function App() {
           forecast_checks: dailyLimits.forecast_checks - (f.remaining_checks || 0)
         }));
       }
-      
+
       await fetchLeaderboard(); // Update leaderboard after points change
     } catch (e) {
       if (e.message.includes('429')) {
@@ -203,13 +203,14 @@ export default function App() {
     fetchLeaderboard();
   }, [username, fetchUserData, fetchLeaderboard]);
 
-  useEffect(() => {
-    // Initial AQI load only if user is set
-    if (username && username !== "Guest") {
-      fetchAQI();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only on mount
+  const [showWelcome, setShowWelcome] = useState(() => {
+    return !localStorage.getItem('ecoquest-welcomed');
+  });
+
+  const dismissWelcome = () => {
+    setShowWelcome(false);
+    localStorage.setItem('ecoquest-welcomed', 'true');
+  };
 
   // Normalize forecast to an array of {date, aqi}
   const forecastDays = useMemo(() => {
@@ -222,15 +223,15 @@ export default function App() {
 
   // Prepare leaderboard data with field normalization
   const currentUser = { name: username, points, badges };
-  
+
   // Normalize leaderboard data - handle both 'username' and 'name' fields
   const normalizedLeaderboard = leaderboard.map(user => ({
     name: user.username || user.name || 'Unknown',
     username: user.username || user.name || 'Unknown',
     points: user.points || 0
   }));
-  
-  const otherUsers = normalizedLeaderboard.filter(user => 
+
+  const otherUsers = normalizedLeaderboard.filter(user =>
     user.username !== username && user.name !== username
   );
 
@@ -251,7 +252,7 @@ export default function App() {
               Hackathon Demo
             </span>
           </div>
-          
+
           {/* Username and Points Section */}
           <div className="flex items-center gap-4">
             {/* Username Input */}
@@ -272,17 +273,17 @@ export default function App() {
                 </button>
               )}
             </form>
-            
+
             {/* Points Display */}
             <div className="rounded-xl bg-white/5 px-3 py-1.5 text-sm">
               <span className="text-gray-300">
-                {username}: 
+                {username}:
               </span>
               <b className="text-emerald-400 ml-1">
                 {loadingUser ? "..." : points} pts
               </b>
             </div>
-            
+
             {/* Badges */}
             <div className="hidden sm:flex gap-1">
               {badges.map((b, i) => (
@@ -312,23 +313,46 @@ export default function App() {
             <button onClick={fetchAQI}
               disabled={loadingAQI || !canCheckAQI}
               className="w-full rounded-xl bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 font-semibold text-slate-900 transition">
-              {loadingAQI ? "Fetching AQI…" : 
-               !canCheckAQI && username !== "Guest" ? `Daily Limit (${dailyActions.aqi_checks}/${dailyLimits.aqi_checks})` :
-               username === "Guest" ? "Set Username First" :
-               `Fetch AQI (+10 pts) [${dailyActions.aqi_checks}/${dailyLimits.aqi_checks}]`}
+              {loadingAQI ? "Fetching AQI…" :
+                !canCheckAQI && username !== "Guest" ? `Daily Limit (${dailyActions.aqi_checks}/${dailyLimits.aqi_checks})` :
+                  username === "Guest" ? "Set Username First" :
+                    `Fetch AQI (+10 pts) [${dailyActions.aqi_checks}/${dailyLimits.aqi_checks}]`}
             </button>
             <button onClick={fetchForecast}
               disabled={loadingForecast || !canCheckForecast}
               className="whitespace-nowrap rounded-xl border border-white/15 hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 font-semibold transition">
-              {loadingForecast ? "Loading…" : 
-               !canCheckForecast && username !== "Guest" ? "Daily Limit" :
-               username === "Guest" ? "Set Username" :
-               `Forecast (+5 pts) [${dailyActions.forecast_checks}/${dailyLimits.forecast_checks}]`}
+              {loadingForecast ? "Loading…" :
+                !canCheckForecast && username !== "Guest" ? "Daily Limit" :
+                  username === "Guest" ? "Set Username" :
+                    `Forecast (+5 pts) [${dailyActions.forecast_checks}/${dailyLimits.forecast_checks}]`}
             </button>
           </div>
         </div>
 
         {error && <div className="mt-3 rounded-xl bg-red-500/10 border border-red-500/30 px-3 py-2 text-sm text-red-300">{error}</div>}
+        {showWelcome && (
+          <div className="mt-3 rounded-xl bg-gradient-to-r from-emerald-500/10 to-cyan-500/10 border border-emerald-300/20 px-4 py-3">
+            <div className="flex items-start justify-between">
+              <div>
+                <h4 className="text-sm font-semibold text-emerald-300 mb-1">🎉 Welcome to EcoQuest!</h4>
+                <p className="text-xs text-gray-300">
+                  Check air quality, view forecasts, and calculate carbon emissions to earn points.
+                  Set a username to start earning points and compete on the leaderboard!
+                </p>
+                <div className="mt-2 text-xs text-emerald-400">
+                  Daily limits: AQI checks (5), Forecasts (3), Carbon calculations (10)
+                </div>
+              </div>
+              <button
+                onClick={dismissWelcome}
+                className="text-gray-400 hover:text-white text-lg leading-none"
+                aria-label="Dismiss welcome message"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        )}
 
         {username === "Guest" && (
           <div className="mt-3 rounded-xl bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-sm text-amber-300">
@@ -424,7 +448,7 @@ export default function App() {
                   </span>
                 </div>
               </div>
-              
+
               <div className="mt-3 text-xs text-gray-400">
                 Limits reset daily at midnight. Each user has their own limits.
               </div>
