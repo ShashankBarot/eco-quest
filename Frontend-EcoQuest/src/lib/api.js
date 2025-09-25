@@ -1,7 +1,6 @@
-// Update your lib/api.js with better error handling:
-
-// src/lib/api.js
-const API_BASE = "http://localhost:8000";
+// frontend/src/lib/api.js
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 
+  (import.meta.env.MODE === 'development' ? "http://localhost:8000" : "https://your-backend-deployment.vercel.app");
 
 // Helper function for better error handling
 async function handleApiResponse(response) {
